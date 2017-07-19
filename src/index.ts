@@ -15,14 +15,13 @@ let mapnik = require("mapnik");
  */
 export interface MapnikServiceOptions {
   client: DBClient; // 用于查询的数据库
-  spatialReference: SpatialReference; // 用于构建坐标系
 }
 
 /**
  * 坐标系
  */
 export enum SpatialReference {
-  WGS84 = 8001
+  WGS84 = 0
 }
 
 interface GeoJson {
@@ -57,7 +56,7 @@ export class MapnikService {
     const client: DBClient = options.client;
 
     MapnikService.client_ = client;
-    MapnikService.spatialReference_ = options.spatialReference;
+    MapnikService.spatialReference_ = SpatialReference.WGS84;
 
     // MySQL 依赖 spatial_ref_sys 表来索引坐标系，故在初始化时应建表并插入数据
     //  SRID int(11)
@@ -73,11 +72,11 @@ export class MapnikService {
     SRTEXT VARCHAR(2048)
 );
 CREATE UNIQUE INDEX spatial_ref_sys_SRID_uindex ON spatial_ref_sys (SRID);`;
-    await client.query(createTableSql);
+    //await client.query(createTableSql);
 
     // 根据用户指定的坐标系加入
-    const replaceSql: string = MapnikService.spaRefSysReplaceSql_(options.spatialReference);
-    await client.query(replaceSql);
+    //const replaceSql: string = MapnikService.spaRefSysReplaceSql_(options.spatialReference);
+    //await client.query(replaceSql);
   }
 
   /**
@@ -90,10 +89,10 @@ CREATE UNIQUE INDEX spatial_ref_sys_SRID_uindex ON spatial_ref_sys (SRID);`;
    * @param compression 压缩，默认不压缩，如果压缩可以支持 gzip
    * @returns {Promise<Buffer>} pbf 流
    */
-  static async queryTileAsPbf(tableName: string, fields: string[], z: number, x: number, y: number,
+  static async queryTileAsPbf(tableName: string, layerName: string , geomFieldName: string , fields: string[], z: number, x: number, y: number,
                               compression: "none" | "gzip" = "none"): Promise<Buffer> {
     // 查询 Polygon 并返回 GeoJSON 格式
-    let result: QueryResult = await MapnikService.queryFeaturesAsGeoJson_(tableName, fields, z, x, y);
+    let result: QueryResult = await MapnikService.queryFeaturesAsGeoJson_(tableName, layerName , geomFieldName, fields, z, x, y);
 
     // 转为 GeoJSON Feature Collection 的格式
     let featureCollection: GeoJsonFeatureCollection = MapnikService.queryResultToFeatureCollection_(result);
@@ -102,7 +101,7 @@ CREATE UNIQUE INDEX spatial_ref_sys_SRID_uindex ON spatial_ref_sys (SRID);`;
     return new Promise<Buffer>((resolve, reject) => {
       mapnik.register_datasource((path.join(mapnik.settings.paths.input_plugins, "geojson.input")));
       let vt: any = new mapnik.VectorTile(z, x, y);
-      vt.addGeoJSON(JSON.stringify(featureCollection), "demo", {});
+      vt.addGeoJSON(JSON.stringify(featureCollection), layerName , {});
       vt.toGeoJSONSync(0);
       vt.getData({
         compression: compression,
@@ -128,7 +127,7 @@ CREATE UNIQUE INDEX spatial_ref_sys_SRID_uindex ON spatial_ref_sys (SRID);`;
    * @returns {Promise<QueryResult>}
    * @private
    */
-  private static async queryFeaturesAsGeoJson_(tableName: string, fields: string[], z: number, x: number, y: number): Promise<QueryResult> {
+  private static async queryFeaturesAsGeoJson_(tableName: string, layerName: string , geomFieldName: string , fields: string[], z: number, x: number, y: number): Promise<QueryResult> {
     let vt: any = new mapnik.VectorTile(z, x, y);
     let extent: number[] = vt.extent();
 
@@ -149,8 +148,8 @@ CREATE UNIQUE INDEX spatial_ref_sys_SRID_uindex ON spatial_ref_sys (SRID);`;
                                                           ${coordinates[4]} ${coordinates[5]}, 
                                                           ${coordinates[6]} ${coordinates[7]},    
                                                           ${coordinates[8]} ${coordinates[9]}))'`;
-    let where: string = `st_Contains(GeomFromText(${polygon}, ${MapnikService.spatialReference_}), SHAPE) or st_overlaps(GeomFromText(${polygon}, ${MapnikService.spatialReference_}), SHAPE)`;
-    const query: SelectQuery = new SelectQuery().fromTable(tableName).select([`ST_AsGeoJSON(SHAPE) AS geojson`, ...fields]).where(where);
+    let where: string = `st_Contains(GeomFromText(${polygon}, ${MapnikService.spatialReference_}), ${ geomFieldName }) or st_overlaps(GeomFromText(${polygon}, ${MapnikService.spatialReference_}), ${  geomFieldName })`;
+    const query: SelectQuery = new SelectQuery().fromTable(tableName).select([`ST_AsGeoJSON(${ geomFieldName }) AS geojson`, ...fields]).where(where);
     return await MapnikService.client_.query(query);
   }
 
@@ -165,7 +164,7 @@ CREATE UNIQUE INDEX spatial_ref_sys_SRID_uindex ON spatial_ref_sys (SRID);`;
 
     for (let row of result.rows) {
       let geoJson: any = JSON.parse(row["geojson"]);
-      delete row["SHAPE"];
+      // delete row["SHAPE"];
       delete row["geojson"];
       let columnGeoInfo: GeoJson = {
         "type": "Feature",
